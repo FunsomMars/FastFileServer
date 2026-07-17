@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#3b82f6">
+<title>{{.Root}} · FileShare</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.ico">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-theme="auto">
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+    <span>FileShare</span>
+  </div>
+  <nav class="crumbs" aria-label="breadcrumb">
+    {{range .Breadcrumb}}
+      {{if not .IsLast}}<a href="{{.Path}}">{{.Name}}</a>{{else}}<span class="current">{{.Name}}</span>{{end}}
+    {{end}}
+  </nav>
+  <div class="actions">
+    <button id="theme-btn" class="icon-btn" title="切换主题" aria-label="theme">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
+  </div>
+</header>
+
+<main class="container">
+  <div class="toolbar">
+    <div class="search">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="search" type="search" placeholder="搜索文件名 (按 / 聚焦)" autocomplete="off" spellcheck="false">
+      <kbd>/</kbd>
+    </div>
+    {{if .Upload}}
+    <button id="upload-btn" class="primary">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      上传
+    </button>
+    {{end}}
+  </div>
+
+  {{if .Parent}}
+  <a class="row row-up" href="{{.Parent}}">
+    <span class="ico">↩</span>
+    <span class="name">.. (上级)</span>
+    <span class="size muted">-</span>
+    <span class="time muted">-</span>
+    <span class="op"></span>
+  </a>
+  {{end}}
+
+  <div class="list" id="list">
+    <div class="list-head">
+      <button class="col col-name" data-sort="name">名称 <span class="arrow"></span></button>
+      <button class="col col-size" data-sort="size">大小 <span class="arrow"></span></button>
+      <button class="col col-time" data-sort="time">修改时间 <span class="arrow"></span></button>
+      <span class="col col-op">操作</span>
+    </div>
+    {{range .Entries}}
+    <div class="row" data-name="{{.Name | lower}}" data-size="{{.Size}}" data-time="{{.ModTime}}">
+      <span class="ico kind-{{.Kind}}">{{icon .Kind}}</span>
+      {{if .IsDir}}
+        <a class="name" href="/{{.Rel}}">{{.Name}}</a>
+      {{else}}
+        <a class="name" href="{{.Path}}" download="{{.Name}}">{{.Name}}</a>
+      {{end}}
+      <span class="size">{{if .IsDir}}-{{else}}{{.SizeStr}}{{end}}</span>
+      <span class="time">{{.ModStr}}</span>
+      <span class="op">
+        {{if .IsDir}}
+          <a class="btn small" href="/{{.Rel}}">打开</a>
+        {{else}}
+          <a class="btn small" href="{{.Path}}" download="{{.Name}}">下载</a>
+        {{end}}
+      </span>
+    </div>
+    {{else}}
+    <div class="empty">
+      <svg viewBox="0 0 24 24" width="64" height="64" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      <p>这里空空如也</p>
+      <p class="muted small">将文件放入此目录即可共享</p>
+    </div>
+    {{end}}
+  </div>
+
+  <footer class="status">
+    <span id="count">共 {{len .Entries}} 项</span>
+    {{if not .NoListing}}<span class="dot">·</span>{{end}}
+    <span id="total">总大小 {{fmtSize .TotalSize}}</span>
+  </footer>
+</main>
+
+{{if .Upload}}
+<div id="upload-modal" class="modal" hidden>
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3>上传到当前目录</h3>
+      <button class="icon-btn" id="upload-close" aria-label="close">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div id="drop-zone" class="drop">
+      <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      <p>拖拽文件到这里，或 <label class="link"><input type="file" multiple id="file-input" hidden>点击选择</label></p>
+      <p class="muted small">支持多文件上传</p>
+    </div>
+    <ul id="upload-list" class="upload-list"></ul>
+  </div>
+</div>
+{{end}}
+
+<div id="toast" class="toast" hidden></div>
+
+<script>window.FS_CFG = { upload: {{.Upload}}, path: window.location.pathname };</script>
+<script src="/static/app.js"></script>
+</body>
+</html>
