@@ -4,16 +4,39 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 )
 
 type logger struct {
-	mu  sync.Mutex
-	out io.Writer
+	mu     sync.Mutex
+	out    io.Writer
+	path   string // optional: when set we can reopen on SIGHUP
 }
 
 func newLogger(w io.Writer) *logger { return &logger{out: w} }
+
+// reopen is only useful when the logger was constructed from a real file and
+// the path is known. It is a no-op for stdout/err. Callers (e.g. SIGHUP handler)
+// can use this to pick up an externally rotated log file.
+func (l *logger) reopen() error {
+	if l == nil || l.path == "" {
+		return nil
+	}
+	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	l.mu.Lock()
+	old := l.out
+	l.out = f
+	l.mu.Unlock()
+	if c, ok := old.(io.Closer); ok {
+		_ = c.Close()
+	}
+	return nil
+}
 
 func (l *logger) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

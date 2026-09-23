@@ -74,6 +74,36 @@ fileserver-windows-amd64.exe -root D:\share -addr :8080
 
 打开浏览器访问 `http://<host>:8080` 即可看到 UI。
 
+#### 后台模式（不阻塞命令行）
+
+加 `-daemon` 启动后台运行：启动器会貃离终端、后台 fork 出独立会话进程，然后立即退出命令行，命令行可以继续输入下一条命令。日志处理与阻塞模式完全一致（只是默认输出改为 `-log` 指定的文件，不填为 stdout，但在被 fork 后会被重定向到 `/dev/null`）。
+
+```bash
+# 后台启动后不阻塞
+./fileserver-linux-amd64 \
+  -root /data/share \
+  -addr :8080 \
+  -daemon \
+  -pidfile /var/run/fileserver.pid \
+  -log /var/log/fileserver/access.log
+
+# 查看状态
+curl -s http://localhost:8080/api/info | head
+
+# 优雅退出（发 SIGTERM 给 pid 文件中的进程）
+kill "$(cat /var/run/fileserver.pid)"
+
+# 手动轮转日志后发送 SIGHUP 重新打开日志文件
+kill -HUP "$(cat /var/run/fileserver.pid)"
+```
+
+**后台模式行为约定**
+
+- 启动器在 fork 后只打印 `pid / addr / root / upload / log / pidfile` 这几行基础信息，之后立即返回不阻塞 shell。
+- 被 fork 出的守护进程在标准错误 / log 中只保留 `fileserver daemonized / pid / addr` 这一档最简 banner，与阻塞模式的详情 banner 区别开来。
+- 日志处理**与阻塞模式完全相同**：访问日志仍走 `log.go` 中间件，信号仍走 graceful shutdown，区别仅在于启动器 vs 守护进程的「启动横幅」代涵不同。
+- 同样启动两次会检测 `-pidfile` 冲突并以非零退出码拒绝。
+
 ---
 
 ## 📖 命令行参数
@@ -92,6 +122,8 @@ Flags:
   -auth user:pass       启用 Basic Auth，例如 admin:123456
   -log string           访问日志文件路径（默认 stdout）
   -pretty               人类友好的大小显示（默认 true）
+  -daemon               后台模式：脱离终端，立即打印精简信息后退出命令行
+  -pidfile string       后台模式时将 PID 写入该文件（可选）
 ```
 
 ---

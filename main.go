@@ -15,12 +15,14 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	ifs "io/fs"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -38,6 +40,8 @@ type config struct {
 	authPass   string
 	logFile    string
 	prettySize bool
+	daemon     bool
+	pidFile    string
 }
 
 func parseFlags() config {
@@ -52,6 +56,8 @@ func parseFlags() config {
 	flag.StringVar(&c.authUser, "auth", "", "Basic Auth in user:pass form (optional)")
 	flag.StringVar(&c.logFile, "log", "", "Access log file (empty = stdout)")
 	flag.BoolVar(&c.prettySize, "pretty", true, "Pretty-print sizes")
+	flag.BoolVar(&c.daemon, "daemon", false, "Run in background (detach from terminal) and exit the launcher immediately")
+	flag.StringVar(&c.pidFile, "pidfile", "", "Write PID to this file when running as a daemon")
 	flag.Parse()
 
 	if c.authUser != "" {
@@ -94,6 +100,48 @@ func main() {
 		followSym: cfg.followSym,
 	}
 
+	// Daemonize if requested. This must happen BEFORE we set up the access
+	// logger so the log file we open below is owned by the long-lived child,
+	// not the launcher.
+	if cfg.daemon {
+		devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+		if err != nil {
+			log.Fatalf("open /dev/null: %v", err)
+		}
+		continueRunning, err := daemonize(devNull, devNull, devNull, alreadyDetached())
+		if err != nil {
+			log.Fatalf("daemonize: %v", err)
+		}
+		if !continueRunning {
+			// We are the launcher process: print minimal info so the user can
+			// confirm the server is now running, then return control to the
+			// shell without blocking. We deliberately do NOT print the full
+			// startup banner here to keep CLI output minimal in daemon mode.
+			if pid, perr := readExistingPID(cfg.pidFile); perr == nil {
+				fmt.Fprintf(os.Stderr, "fileserver already running (pid=%d)\n", pid)
+				os.Exit(1)
+			}
+			if err := writePIDFile(cfg.pidFile); err != nil {
+				// non-fatal in the launcher: the grand-child will try again
+				fmt.Fprintf(os.Stderr, "pidfile: %v\n", err)
+			}
+			fmt.Printf("fileserver started in background (daemonized)\n")
+			fmt.Printf("  addr      : %s\n", cfg.addr)
+			fmt.Printf("  root      : %s\n", cfg.root)
+			fmt.Printf("  upload    : %v\n", cfg.enableUp)
+			fmt.Printf("  log       : %s\n", logFileDisplay(cfg.logFile))
+			if cfg.pidFile != "" {
+				fmt.Printf("  pidfile   : %s\n", cfg.pidFile)
+			}
+			os.Exit(0)
+		}
+		// We are the long-lived child. Still keep the PID file in sync in case
+		// it was created by the launcher process above.
+		if err := writePIDFile(cfg.pidFile); err != nil {
+			log.Fatalf("pidfile: %v", err)
+		}
+	}
+
 	// Set up access logger.
 	var accessLog *logger
 	if cfg.logFile != "" {
@@ -102,6 +150,7 @@ func main() {
 			log.Fatalf("open log file: %v", err)
 		}
 		accessLog = newLogger(f)
+		accessLog.path = cfg.logFile
 	} else {
 		accessLog = newLogger(os.Stdout)
 	}
@@ -155,24 +204,52 @@ func main() {
 	idleDone := make(chan struct{})
 	go func() {
 		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-		<-sigCh
-		log.Printf("shutting down...")
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(ctx); err != nil {
-			log.Printf("shutdown: %v", err)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+		for {
+			sig := <-sigCh
+			if sig == syscall.SIGHUP {
+				if err := accessLog.reopen(); err != nil {
+					log.Printf("log reopen: %v", err)
+				} else {
+					log.Printf("log reopened (SIGHUP)")
+				}
+				continue
+			}
+			log.Printf("shutting down (signal=%s)...", sig)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			if err := srv.Shutdown(ctx); err != nil {
+				log.Printf("shutdown: %v", err)
+			}
+			cancel()
+			// Best-effort pid file cleanup so re-launches are clean.
+			if cfg.pidFile != "" {
+				if b, err := os.ReadFile(cfg.pidFile); err == nil {
+					if p, perr := strconv.Atoi(strings.TrimSpace(string(b))); perr == nil && p == os.Getpid() {
+						_ = os.Remove(cfg.pidFile)
+					}
+				}
+			}
+			close(idleDone)
+			return
 		}
-		close(idleDone)
 	}()
 
-	log.Printf("fileserver starting")
-	log.Printf("  root      : %s", cfg.root)
-	log.Printf("  addr      : %s", cfg.addr)
-	log.Printf("  upload    : %v (max %s, overwrite=%v)", cfg.enableUp, sizeStr(cfg.maxUpload), cfg.overwrite)
-	log.Printf("  listing   : %v", !cfg.noListing)
-	log.Printf("  auth      : %v", cfg.authUser != "")
-	log.Printf("  open      : http://localhost%s", cfg.addr)
+	if cfg.daemon {
+		// Minimal banner: only the absolute essentials are printed so that the
+		// CLI exits promptly and stays out of the operator's way. All other
+		// banner items are already shown by the launcher process before fork.
+		log.Printf("fileserver daemonized")
+		log.Printf("  pid       : %d", os.Getpid())
+		log.Printf("  addr      : %s", cfg.addr)
+	} else {
+		log.Printf("fileserver starting")
+		log.Printf("  root      : %s", cfg.root)
+		log.Printf("  addr      : %s", cfg.addr)
+		log.Printf("  upload    : %v (max %s, overwrite=%v)", cfg.enableUp, sizeStr(cfg.maxUpload), cfg.overwrite)
+		log.Printf("  listing   : %v", !cfg.noListing)
+		log.Printf("  auth      : %v", cfg.authUser != "")
+		log.Printf("  open      : http://localhost%s", cfg.addr)
+	}
 
 	err = srv.ListenAndServe()
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
