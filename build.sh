@@ -1,6 +1,6 @@
 #!/bin/bash
-# Cross-compile FileShare for Windows and Linux on amd64 and arm64.
-# Produces four static binaries in dist/.
+# Cross-compile FileShare for Linux, Windows, and macOS on amd64 and arm64.
+# Produces five static binaries in dist/.
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -23,6 +23,7 @@ build_one linux  amd64
 build_one linux  arm64
 build_one windows amd64
 build_one windows arm64
+build_one darwin arm64
 
 echo
 echo "Done:"
