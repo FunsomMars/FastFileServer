@@ -28,3 +28,5 @@ build_one darwin arm64
 echo
 echo "Done:"
 ls -lh dist/
+
+# just for upload test
